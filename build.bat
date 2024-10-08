@@ -1,0 +1,1 @@
+pyinstaller --onefile tdmcli.py -i "NONE"
