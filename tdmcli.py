@@ -7,7 +7,7 @@ from pathlib import Path
 from tqdm import tqdm
 import time
 
-VERSION = "1.5"
+VERSION = "1.0"
 KEY = "tdmcliKeyy"
 MAX_WORKERS = os.cpu_count() * 4
 
@@ -100,7 +100,7 @@ def delete_template(template_name):
 def list_templates():
     templates = [f.stem for f in Path(get_executable_dir()).glob("*.tdmcli")]
     if templates:
-        print("Your templates:")
+        print("Your templates:\n\n")
         for t in templates:
             print(t)
     else:
@@ -154,7 +154,7 @@ tdmcli create <template_name>    Create a template.
 tdmcli get <template_name>       Apply the template.
 tdmcli delete <template_name>    Delete a template.
 tdmcli list                     Show all templates.
-tdmcli import <input_file>       Import an external template.
+tdmcli import <input_file> [template_name]      Import an external template.
 tdmcli export <template_name> <output_dir> Export template.
 tdmcli -v                       Show the current version.
 tdmcli -u                       Check for updates.
@@ -168,6 +168,12 @@ def main():
         return
 
     command = sys.argv[1]
+
+    if os.path.isfile(command):
+        print(f"Detected file '{command}', importing as template.")
+        import_template(command)
+        return
+
     if command == "create" and len(sys.argv) == 3:
         create_template(sys.argv[2])
     elif command == "get" and len(sys.argv) == 3:
@@ -189,3 +195,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
