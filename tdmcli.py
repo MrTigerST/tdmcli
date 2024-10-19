@@ -11,13 +11,16 @@ VERSION = "1.0"
 KEY = "tdmcliKeyy"
 MAX_WORKERS = os.cpu_count() * 4
 
+def get_templates_dir():
+    templates_dir = os.getenv("TDMCLI_TEMPLATE_DIR", os.path.join(os.getenv("APPDATA"), "tdmcli", "templates"))
+    if not os.path.exists(templates_dir):
+        os.makedirs(templates_dir, exist_ok=True)
+    return templates_dir
+
 def xor_crypt(data, key):
     key_bytes = key.encode()
     key_len = len(key_bytes)
     return bytearray([b ^ key_bytes[i % key_len] for i, b in enumerate(data)])
-
-def get_executable_dir():
-    return os.path.dirname(os.path.realpath(sys.argv[0]))
 
 def process_file(file_path, root_dir):
     relative_path = os.path.relpath(file_path, root_dir)
@@ -30,7 +33,7 @@ def create_template(template_name, root_dir='.'):
     print(f"Loading... Creating template '{template_name}'.")
     time.sleep(0.5)
 
-    template_path = os.path.join(get_executable_dir(), f"{template_name}.tdmcli")
+    template_path = os.path.join(get_templates_dir(), f"{template_name}.tdmcli")
     all_files = [os.path.join(root, file) for root, _, files in os.walk(root_dir) for file in files]
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -58,12 +61,38 @@ def process_template_file(lines, start_index):
 
     with open(file_name, 'wb') as output_file:
         output_file.write(decrypted_content)
+        
+def change_templates_dir(new_dir):
+    if not os.path.exists(new_dir):
+        os.makedirs(new_dir, exist_ok=True)
+        print(f"Directory created: {new_dir}")
+    
+    transfer_choice = input("Do you want to transfer the existing templates to the new directory? (y/n): ").strip().lower()
+
+    old_dir = get_templates_dir()
+
+    if transfer_choice == 'y':
+        if os.path.exists(old_dir) and os.listdir(old_dir):
+            for file_name in os.listdir(old_dir):
+                old_file_path = os.path.join(old_dir, file_name)
+                new_file_path = os.path.join(new_dir, file_name)
+                shutil.move(old_file_path, new_file_path)
+            print(f"Templates transferred from {old_dir} to {new_dir}.")
+        else:
+            print("No templates to transfer.")
+    else:
+        print("Templates were not transferred.")
+
+    os.environ["TDMCLI_TEMPLATE_DIR"] = new_dir
+
+    print(f"Templates directory updated to: {new_dir}")
+
 
 def apply_template(template_name):
     print(f"Loading... Applying template '{template_name}'.")
     time.sleep(0.5)
 
-    template_path = os.path.join(get_executable_dir(), f"{template_name}.tdmcli")
+    template_path = os.path.join(get_templates_dir(), f"{template_name}.tdmcli")
     if not os.path.exists(template_path):
         print(f"Template '{template_name}' not found.")
         return
@@ -90,7 +119,7 @@ def apply_template(template_name):
     print(f"Template '{template_name}' applied successfully.")
 
 def delete_template(template_name):
-    template_path = os.path.join(get_executable_dir(), f"{template_name}.tdmcli")
+    template_path = os.path.join(get_templates_dir(), f"{template_name}.tdmcli")
     if os.path.exists(template_path):
         os.remove(template_path)
         print(f"Template '{template_name}' deleted.")
@@ -98,7 +127,7 @@ def delete_template(template_name):
         print(f"Template '{template_name}' not found.")
 
 def list_templates():
-    templates = [f.stem for f in Path(get_executable_dir()).glob("*.tdmcli")]
+    templates = [f.stem for f in Path(get_templates_dir()).glob("*.tdmcli")]
     if templates:
         print("Your templates:\n\n")
         for t in templates:
@@ -129,7 +158,7 @@ def check_for_updates():
         print("Failed to check for updates.")
 
 def export_template(template_name, output_dir):
-    template_path = os.path.join(get_executable_dir(), f"{template_name}.tdmcli")
+    template_path = os.path.join(get_templates_dir(), f"{template_name}.tdmcli")
     if os.path.exists(template_path):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
@@ -141,7 +170,7 @@ def export_template(template_name, output_dir):
 def import_template(input_file, template_name=None):
     if not template_name:
         template_name = Path(input_file).stem
-    dest_path = os.path.join(get_executable_dir(), f"{template_name}.tdmcli")
+    dest_path = os.path.join(get_templates_dir(), f"{template_name}.tdmcli")
     shutil.copy(input_file, dest_path)
     print(f"Template imported from '{input_file}' as '{template_name}'")
 
@@ -156,6 +185,7 @@ tdmcli delete <template_name>    Delete a template.
 tdmcli list                     Show all templates.
 tdmcli import <input_file> [template_name]      Import an external template.
 tdmcli export <template_name> <output_dir> Export template.
+tdmcli change-dir                     Change directory for your created templates.
 tdmcli -v                       Show the current version.
 tdmcli -u                       Check for updates.
 tdmcli help                     Show this help.
@@ -190,6 +220,8 @@ def main():
         export_template(sys.argv[2], sys.argv[3])
     elif command == "import" and len(sys.argv) >= 3:
         import_template(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None)
+    elif command == "change-dir" and len(sys.argv) == 3:
+        change_templates_dir(sys.argv[2])
     else:
         show_help_command()
 
