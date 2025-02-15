@@ -85,38 +85,93 @@ fn process_file(file_path: &Path, root_dir: &Path) -> (String, Vec<u8>) {
     (relative_path, encrypted_content)
 }
 
-fn create_template(template_name: &str, root_dir: &Path) {
+fn create_template(template_name: &str, root_dir: &Path, include_hidden: bool) {
     println!("Loading... Creating template '{}'.", template_name);
     let template_path = get_templates_dir().join(format!("{}.tdmcli", template_name));
-    let files: Vec<PathBuf> = walkdir::WalkDir::new(root_dir)
-        .into_iter()
+
+    let walker = walkdir::WalkDir::new(root_dir).into_iter().filter_entry(|e| {
+        if !include_hidden {
+            if let Some(name) = e.file_name().to_str() {
+                return !name.starts_with('.');
+            }
+        }
+        true
+    });
+
+    let file_entries: Vec<PathBuf> = walker
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
         .map(|e| e.path().to_path_buf())
         .collect();
 
-    let pb = ProgressBar::new(files.len() as u64);
-    pb.set_style(ProgressStyle::default_bar()
+    let pb_files = ProgressBar::new(file_entries.len() as u64);
+    pb_files.set_style(ProgressStyle::default_bar()
         .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} files")
         .unwrap());
 
-    let results: Vec<_> = files.par_iter()
+    let file_results: Vec<(String, Vec<u8>)> = file_entries.par_iter()
         .map(|file| {
             let res = process_file(file, root_dir);
-            pb.inc(1);
+            pb_files.inc(1);
             res
         })
         .collect();
-    pb.finish_with_message("Template creation complete");
+    pb_files.finish_with_message("File processing complete");
 
-    let mut template_file = File::create(template_path).unwrap();
-    for (relative_path, encrypted_content) in results {
+    let walker_dirs = walkdir::WalkDir::new(root_dir).into_iter().filter_entry(|e| {
+        if !include_hidden {
+            if let Some(name) = e.file_name().to_str() {
+                return !name.starts_with('.');
+            }
+        }
+        true
+    });
+    let empty_dirs: Vec<PathBuf> = walker_dirs
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_dir())
+        .filter(|e| {
+            fs::read_dir(e.path())
+                .map(|iter| {
+                    iter.filter(|entry| {
+                        if let Ok(entry) = entry {
+                            if !include_hidden {
+                                if let Some(name) = entry.file_name().to_str() {
+                                    return !name.starts_with('.');
+                                }
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    }).next().is_none()
+                })
+                .unwrap_or(false)
+        })
+        .map(|e| e.path().to_path_buf())
+        .collect();
+
+    let mut template_file = File::create(&template_path).unwrap();
+
+    for dir in empty_dirs {
+        let relative_path = dir.strip_prefix(root_dir)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        if relative_path.is_empty() {
+            continue;
+        }
+        writeln!(template_file, "DIR: {}", relative_path).unwrap();
+        writeln!(template_file, "END_OF_DIR").unwrap();
+    }
+
+    for (relative_path, encrypted_content) in file_results {
         let encoded = general_purpose::STANDARD.encode(&encrypted_content);
         writeln!(template_file, "FILE: {}", relative_path).unwrap();
         writeln!(template_file, "SIZE: {}", encoded.len()).unwrap();
         writeln!(template_file, "{}", encoded).unwrap();
         writeln!(template_file, "END_OF_FILE").unwrap();
     }
+
     println!("Template '{}' created successfully.", template_name);
 }
 
@@ -130,7 +185,9 @@ fn apply_template(template_name: &str) {
 
     let content = fs::read_to_string(&template_path).unwrap();
     let mut file_entries = Vec::new();
+    let mut dir_entries = Vec::new();
     let mut lines = content.lines();
+
     while let Some(line) = lines.next() {
         if line.starts_with("FILE: ") {
             let file_name = line[6..].to_string();
@@ -139,8 +196,21 @@ fn apply_template(template_name: &str) {
             let encoded = lines.next().unwrap().to_string();
             let _ = lines.next().unwrap();
             file_entries.push((file_name, size, encoded));
+        } else if line.starts_with("DIR: ") {
+            let dir_name = line[5..].to_string();
+            let end_line = lines.next().unwrap();
+            if end_line != "END_OF_DIR" {
+                eprintln!("Template format error: expected END_OF_DIR after directory entry.");
+            }
+            dir_entries.push(dir_name);
         }
     }
+
+    for dir_name in dir_entries {
+        let path = Path::new(&dir_name);
+        fs::create_dir_all(path).unwrap();
+    }
+
     let pb = ProgressBar::new(file_entries.len() as u64);
     pb.set_style(ProgressStyle::default_bar()
         .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} files")
@@ -252,19 +322,19 @@ fn check_for_update_normalize() {
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        println!(r#"Usage: tdmcli <command> <template_name>
+        println!(r#"Usage: tdmcli <command> [arguments]
 
 Examples:
-tdmcli create <template_name>    Create a template.
-tdmcli get <template_name>       Apply the template.
-tdmcli delete <template_name>    Delete a template.
-tdmcli list                      Show all templates.
-tdmcli import <input_file> [template_name]      Import an external template.
-tdmcli export <template_name> <output_dir>        Export template.
-tdmcli change-dir <new_directory>   Change template directory.
-tdmcli -v                        Show the current version.
-tdmcli -u                        Check for updates.
-tdmcli help                      Show this help."#);
+  tdmcli create <template_name> [--hiddenfolder]    Create a template (include hidden folders if flag provided).
+  tdmcli get <template_name>       Apply the template.
+  tdmcli delete <template_name>    Delete a template.
+  tdmcli list                      Show all templates.
+  tdmcli import <input_file> [template_name]      Import an external template.
+  tdmcli export <template_name> <output_dir>        Export template.
+  tdmcli change-dir <new_directory>   Change template directory.
+  tdmcli -v                        Show the current version.
+  tdmcli -u                        Check for updates.
+  tdmcli help                      Show this help."#);
         return;
     }
 
@@ -275,9 +345,10 @@ tdmcli help                      Show this help."#);
     }
 
     match args[1].as_str() {
-        "create" if args.len() == 3 => {
+        "create" if args.len() >= 3 => {
+            let include_hidden = args.iter().any(|arg| arg == "--hiddenfolder");
             check_for_update_normalize();
-            create_template(&args[2], &env::current_dir().unwrap())
+            create_template(&args[2], &env::current_dir().unwrap(), include_hidden)
         }
         "get" if args.len() == 3 => {
             check_for_update_normalize();
@@ -308,18 +379,18 @@ tdmcli help                      Show this help."#);
         "-u" => {
             check_for_updates()
         }
-        _ => println!(r#"Usage: tdmcli <command> <template_name>
+        _ => println!(r#"Usage: tdmcli <command> [arguments]
 
 Examples:
-tdmcli create <template_name>    Create a template.
-tdmcli get <template_name>       Apply the template.
-tdmcli delete <template_name>    Delete a template.
-tdmcli list                      Show all templates.
-tdmcli import <input_file> [template_name]      Import an external template.
-tdmcli export <template_name> <output_dir>        Export template.
-tdmcli change-dir <new_directory>   Change template directory.
-tdmcli -v                        Show the current version.
-tdmcli -u                        Check for updates.
-tdmcli help                      Show this help."#),
+  tdmcli create <template_name> [--hiddenfolder]    Create a template (include hidden folders if flag provided).
+  tdmcli get <template_name>       Apply the template.
+  tdmcli delete <template_name>    Delete a template.
+  tdmcli list                      Show all templates.
+  tdmcli import <input_file> [template_name]      Import an external template.
+  tdmcli export <template_name> <output_dir>        Export template.
+  tdmcli change-dir <new_directory>   Change template directory.
+  tdmcli -v                        Show the current version.
+  tdmcli -u                        Check for updates.
+  tdmcli help                      Show this help."#),
     }
 }

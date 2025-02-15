@@ -27,7 +27,7 @@ To install tdmcli, go to the [Release Page](https://github.com/MrTigerST/tdmcli/
 
 **At the moment there are 9 types of commands to do on the Command Prompt:**
 
- - `tdmcli create <template_name>` this creates a new template using the folder where you ran this command .
+ - `tdmcli create <template_name> [--hiddenfolder]`    Create a template (include hidden folders if flag provided).
  
  - `tdmcli get <template_name>` this uses a template you have already created, on the folder where you ran this command
  
