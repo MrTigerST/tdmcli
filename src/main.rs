@@ -1,4 +1,5 @@
 use std::env;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -17,6 +18,7 @@ fn get_config_file_path() -> PathBuf {
     config_dir.push("config.toml");
     config_dir
 }
+
 
 fn read_config_template_dir() -> Option<PathBuf> {
     let config_file = get_config_file_path();
@@ -49,6 +51,63 @@ fn change_template_dir(new_dir: &Path) {
     fs::write(&config_file, config_contents).unwrap();
     println!("Template directory changed to {:?}", new_dir);
 }
+
+fn load_ignore_patterns(root_dir: &Path) -> GlobSet {
+    let mut builder = GlobSetBuilder::new();
+    let ignore_file = root_dir.join(".tdmignore");
+
+    if let Ok(contents) = fs::read_to_string(&ignore_file) {
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let mut pattern = trimmed.to_string();
+
+            if pattern.starts_with('/') {
+                pattern.remove(0);
+            }
+
+            if pattern.ends_with('/') {
+                let dir_pattern = pattern.trim_end_matches('/').to_string();
+                builder.add(Glob::new(&dir_pattern).unwrap());
+                let wildcard_pattern = format!("{}**", pattern);
+                builder.add(Glob::new(&wildcard_pattern).unwrap());
+            } else if pattern.contains('/') {
+
+                builder.add(Glob::new(&pattern).unwrap());
+                let wildcard_pattern = format!("{}/**", pattern);
+                builder.add(Glob::new(&wildcard_pattern).unwrap());
+            } else {
+                builder.add(Glob::new(&pattern).unwrap());
+            }
+        }
+    }
+    builder.build().unwrap()
+}
+
+fn should_ignore(path: &Path, root_dir: &Path, patterns: &GlobSet, exclude_tdmignore: bool) -> bool {
+    let relative_path = path.strip_prefix(root_dir).unwrap_or(path);
+
+    if relative_path == Path::new(".tdmignore") {
+        return exclude_tdmignore;
+    }
+
+    let relative_str = relative_path.to_str().unwrap_or("");
+    if patterns.is_match(relative_str) {
+        return true;
+    }
+
+    for component in relative_path.components() {
+        if let Some(comp_str) = component.as_os_str().to_str() {
+            if patterns.is_match(comp_str) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 
 fn get_templates_dir() -> PathBuf {
     if let Ok(dir) = env::var("TDMCLI_TEMPLATE_DIR") {
@@ -85,24 +144,49 @@ fn process_file(file_path: &Path, root_dir: &Path) -> (String, Vec<u8>) {
     (relative_path, encrypted_content)
 }
 
-fn create_template(template_name: &str, root_dir: &Path, include_hidden: bool) {
+fn is_in_hidden_directory(path: &Path, root_dir: &Path) -> bool {
+    if let Ok(relative) = path.strip_prefix(root_dir) {
+        if let Some(parent) = relative.parent() {
+            return parent.components().any(|comp| {
+                comp.as_os_str()
+                    .to_str()
+                    .map(|s| s.starts_with('.'))
+                    .unwrap_or(false)
+            });
+        }
+    }
+    false
+}
+
+fn create_template(template_name: &str, root_dir: &Path, include_hidden: bool, exclude_ignore: bool) {
     println!("Loading... Creating template '{}'.", template_name);
     let template_path = get_templates_dir().join(format!("{}.tdmcli", template_name));
+    let ignore_patterns = load_ignore_patterns(root_dir);
 
-    let walker = walkdir::WalkDir::new(root_dir).into_iter().filter_entry(|e| {
-        if !include_hidden {
-            if let Some(name) = e.file_name().to_str() {
-                return !name.starts_with('.');
+    let file_entries: Vec<PathBuf> = walkdir::WalkDir::new(root_dir)
+    .into_iter()
+    .filter_map(|entry| entry.ok())
+    .filter(|entry| {
+        let path = entry.path();
+
+        if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+            if file_name == ".tdmignore" {
+                return !exclude_ignore;
             }
         }
-        true
-    });
 
-    let file_entries: Vec<PathBuf> = walker
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file())
-        .map(|e| e.path().to_path_buf())
-        .collect();
+        if !include_hidden && is_in_hidden_directory(path, root_dir) {
+            return false;
+        }
+
+        if should_ignore(path, root_dir, &ignore_patterns, exclude_ignore) {
+            return false;
+        }
+
+        entry.file_type().is_file()
+    })
+    .map(|entry| entry.path().to_path_buf())
+    .collect();
 
     let pb_files = ProgressBar::new(file_entries.len() as u64);
     pb_files.set_style(ProgressStyle::default_bar()
@@ -118,19 +202,28 @@ fn create_template(template_name: &str, root_dir: &Path, include_hidden: bool) {
         .collect();
     pb_files.finish_with_message("File processing complete");
 
-    let walker_dirs = walkdir::WalkDir::new(root_dir).into_iter().filter_entry(|e| {
-        if !include_hidden {
-            if let Some(name) = e.file_name().to_str() {
-                return !name.starts_with('.');
+    let empty_dirs: Vec<PathBuf> = walkdir::WalkDir::new(root_dir)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            let path = entry.path();
+            if !path.is_dir() {
+                return false;
             }
-        }
-        true
-    });
-    let empty_dirs: Vec<PathBuf> = walker_dirs
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_dir())
-        .filter(|e| {
-            fs::read_dir(e.path())
+
+            if !include_hidden {
+                if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                    if name.starts_with('.') {
+                        return false;
+                    }
+                }
+            }
+
+            if should_ignore(path, root_dir, &ignore_patterns, exclude_ignore) {
+                return false;
+            }
+
+            fs::read_dir(path)
                 .map(|iter| {
                     iter.filter(|entry| {
                         if let Ok(entry) = entry {
@@ -147,7 +240,7 @@ fn create_template(template_name: &str, root_dir: &Path, include_hidden: bool) {
                 })
                 .unwrap_or(false)
         })
-        .map(|e| e.path().to_path_buf())
+        .map(|entry| entry.path().to_path_buf())
         .collect();
 
     let mut template_file = File::create(&template_path).unwrap();
@@ -241,6 +334,11 @@ fn delete_template(template_name: &str) {
     }
 }
 
+fn show_template_directory() {
+    let dir = get_templates_dir();
+    println!("Templates directory: {}", dir.display());
+}
+
 fn list_templates() {
     let templates_dir = get_templates_dir();
     let templates: Vec<_> = fs::read_dir(&templates_dir)
@@ -325,12 +423,13 @@ fn main() {
         println!(r#"Usage: tdmcli <command> [arguments]
 
 Examples:
-  tdmcli create <template_name> [--hiddenfolder]    Create a template (include hidden folders if flag provided).
+  tdmcli create <template_name> [--hiddenfolder] [--excludeignore]   Create a template (include hidden folders if flag provided, exclude .tdmignore if flag provided).
   tdmcli get <template_name>       Apply the template.
   tdmcli delete <template_name>    Delete a template.
   tdmcli list                      Show all templates.
   tdmcli import <input_file> [template_name]      Import an external template.
   tdmcli export <template_name> <output_dir>        Export template.
+  tdmcli show-dir                  Show the directory where templates are stored.
   tdmcli change-dir <new_directory>   Change template directory.
   tdmcli -v                        Show the current version.
   tdmcli -u                        Check for updates.
@@ -347,8 +446,9 @@ Examples:
     match args[1].as_str() {
         "create" if args.len() >= 3 => {
             let include_hidden = args.iter().any(|arg| arg == "--hiddenfolder");
+            let exclude_ignore = args.iter().any(|arg| arg == "--excludeignore");
             check_for_update_normalize();
-            create_template(&args[2], &env::current_dir().unwrap(), include_hidden)
+            create_template(&args[2], &env::current_dir().unwrap(), include_hidden, exclude_ignore)
         }
         "get" if args.len() == 3 => {
             check_for_update_normalize();
@@ -369,6 +469,9 @@ Examples:
             check_for_update_normalize();
             import_template(Path::new(&args[2]), args.get(3).map(String::as_str))
         }
+        "show-dir" => {
+            show_template_directory();
+        }
         "change-dir" if args.len() == 3 => {
             let new_dir = Path::new(&args[2]);
             change_template_dir(new_dir);
@@ -382,12 +485,13 @@ Examples:
         _ => println!(r#"Usage: tdmcli <command> [arguments]
 
 Examples:
-  tdmcli create <template_name> [--hiddenfolder]    Create a template (include hidden folders if flag provided).
+  tdmcli create <template_name> [--hiddenfolder] [--excludeignore]   Create a template (include hidden folders if flag provided, exclude .tdmignore if flag provided).
   tdmcli get <template_name>       Apply the template.
   tdmcli delete <template_name>    Delete a template.
   tdmcli list                      Show all templates.
   tdmcli import <input_file> [template_name]      Import an external template.
   tdmcli export <template_name> <output_dir>        Export template.
+  tdmcli show-dir                  Show the directory where templates are stored.
   tdmcli change-dir <new_directory>   Change template directory.
   tdmcli -v                        Show the current version.
   tdmcli -u                        Check for updates.

@@ -27,13 +27,15 @@ To install tdmcli, go to the [Release Page](https://github.com/MrTigerST/tdmcli/
 
 **At the moment there are 9 types of commands to do on the Command Prompt:**
 
- - `tdmcli create <template_name> [--hiddenfolder]`    Create a template (include hidden folders if flag provided).
+ - `tdmcli create <template_name> [--hiddenfolder] [--excludeignore]`   Create a template (include hidden folders if flag provided, exclude .tdmignore if flag provided).
  
  - `tdmcli get <template_name>` this uses a template you have already created, on the folder where you ran this command
  
  - `tdmcli delete <template_name>` well... delete a Template you created!
  
  - `tdmcli list` shows the list of templates you created.
+
+ - `tdmcli show-dir`   Show the directory where templates are stored.
 
  - `tdmcli change-dir <new_directory>`   Change template directory.
 
@@ -47,6 +49,8 @@ To install tdmcli, go to the [Release Page](https://github.com/MrTigerST/tdmcli/
 
  - `tdmcli help` show tdmcli available commands (not really a command but it will still show you the info).
 
+
+> **To exclude certain files when creating the template, you can create a file in the folder called `.tdmignore` , and you can enter directories, subdirectories, files, etc.**
 
 ------------
 
