@@ -5,8 +5,27 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 use indicatif::{ProgressBar, ProgressStyle};
+#[cfg(target_os = "windows")]
+use std::os::windows::fs::MetadataExt;
 
 use base64::{engine::general_purpose, Engine as _};
+#[cfg(target_os = "windows")]
+fn is_hidden(path: &Path) -> bool {
+    if let Ok(metadata) = fs::metadata(path) {
+        metadata.file_attributes() & 0x2 != 0
+    } else {
+        false
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
+fn is_hidden(path: &Path) -> bool {
+    if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+        file_name.starts_with('.')
+    } else {
+        false
+    }
+}
 
 const VERSION: &str = "1.0";
 const KEY: &str = "tdmcliKeyy";
@@ -144,49 +163,40 @@ fn process_file(file_path: &Path, root_dir: &Path) -> (String, Vec<u8>) {
     (relative_path, encrypted_content)
 }
 
-fn is_in_hidden_directory(path: &Path, root_dir: &Path) -> bool {
-    if let Ok(relative) = path.strip_prefix(root_dir) {
-        if let Some(parent) = relative.parent() {
-            return parent.components().any(|comp| {
-                comp.as_os_str()
-                    .to_str()
-                    .map(|s| s.starts_with('.'))
-                    .unwrap_or(false)
-            });
-        }
-    }
-    false
-}
-
 fn create_template(template_name: &str, root_dir: &Path, include_hidden: bool, exclude_ignore: bool) {
     println!("Loading... Creating template '{}'.", template_name);
     let template_path = get_templates_dir().join(format!("{}.tdmcli", template_name));
     let ignore_patterns = load_ignore_patterns(root_dir);
 
-    let file_entries: Vec<PathBuf> = walkdir::WalkDir::new(root_dir)
-    .into_iter()
-    .filter_map(|entry| entry.ok())
-    .filter(|entry| {
+    let walker = walkdir::WalkDir::new(root_dir).into_iter().filter_entry(|entry| {
         let path = entry.path();
+    
+        if !include_hidden && entry.file_type().is_dir() {
+            return !is_hidden(path);
+        }
+        true
+    });    
 
-        if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
-            if file_name == ".tdmignore" {
-                return !exclude_ignore;
+    let file_entries: Vec<PathBuf> = walker
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            let path = entry.path();
+
+            if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+                if file_name == ".tdmignore" {
+                    return !exclude_ignore;
+                }
             }
-        }
 
-        if !include_hidden && is_in_hidden_directory(path, root_dir) {
-            return false;
-        }
+            if should_ignore(path, root_dir, &ignore_patterns, exclude_ignore) {
+                return false;
+            }
 
-        if should_ignore(path, root_dir, &ignore_patterns, exclude_ignore) {
-            return false;
-        }
+            entry.file_type().is_file()
+        })
+        .map(|entry| entry.path().to_path_buf())
+        .collect();
 
-        entry.file_type().is_file()
-    })
-    .map(|entry| entry.path().to_path_buf())
-    .collect();
 
     let pb_files = ProgressBar::new(file_entries.len() as u64);
     pb_files.set_style(ProgressStyle::default_bar()
