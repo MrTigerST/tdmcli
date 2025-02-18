@@ -129,16 +129,12 @@ fn should_ignore(path: &Path, root_dir: &Path, patterns: &GlobSet, exclude_tdmig
 
 
 fn get_templates_dir() -> PathBuf {
-    if let Ok(dir) = env::var("TDMCLI_TEMPLATE_DIR") {
-        let path = PathBuf::from(dir);
-        fs::create_dir_all(&path).unwrap_or_default();
-        return path;
-    }
     if let Some(dir) = read_config_template_dir() {
         fs::create_dir_all(&dir).unwrap_or_default();
         return dir;
     }
-    let mut path = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+    
+    let mut path = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
     path.push("tdmcli/templates");
     fs::create_dir_all(&path).unwrap_or_default();
     path
