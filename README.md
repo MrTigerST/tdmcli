@@ -1,6 +1,6 @@
 # tdmcli
 
-A Template Directory Manager CLI Software (Windows only for now).
+A Template Directory Manager CLI Software.
 
 
 ------------
